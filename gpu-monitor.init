@@ -1,0 +1,11 @@
+#!/sbin/openrc-run
+
+name="gpu-monitor"
+description="Bridge nvidia-smi data to Arduino LCD via serial"
+command="/usr/bin/python3"
+command_args="/opt/pwm_arduino/gpu_to_arduino.py"
+
+depend() {
+    need net
+    after networking
+}
