@@ -16,7 +16,7 @@ def find_arduino_port():
         usb_dev = os.path.dirname(os.path.dirname(dev))
         id_file = os.path.join(usb_dev, 'idProduct')
         vid_file = os.path.join(usb_dev, '..', 'idVendor')
-        
+
         try:
             if os.path.isfile(id_file):
                 pid = open(id_file).read().strip()

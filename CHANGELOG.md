@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.2.0] - 2026-05-30
+
+### Added
+- 25 kHz PWM output on Arduino Nano D9 for 4-wire PC fans.
+- Tachometer input on D2 with interrupt-based RPM calculation.
+- ARCTIC P12 Pro PST RPM calibration and tach noise filtering.
+- Fan spin-up kick and minimum stable PWM duty.
+- LCD I2C address auto-detection.
+- Serial boot/status message from the Arduino firmware.
+- Robust Python serial bridge with CH340 auto-detection and reconnect loop.
+
+### Changed
+- Serial protocol now sends space-separated temperature/load pairs for all GPUs.
+- Fan control now ramps from 50°C to 85°C with hysteresis.
+- LCD display now shows GPU temperature/load and fan RPM.
+
 ## [0.1.0] - 2024-05-30
 
 ### Added

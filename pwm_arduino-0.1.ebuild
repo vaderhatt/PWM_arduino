@@ -13,6 +13,7 @@ KEYWORDS="~amd64 ~x86"
 IUSE=""
 
 DEPEND="
+	>=dev-util/arduino-cli-1.0.0
 	dev-python/pyserial
 	sys-apps/avrdude
 "
@@ -23,26 +24,30 @@ src_install() {
 	insinto /opt/pwm_arduino
 	newins gpu_monitor.ino gpu_monitor.ino
 
-	# Install Python bridge script (make executable)
+	# Install Python bridge script
 	exeinto /opt/pwm_arduino
-	newins gpu_to_arduino.py gpu_to_arduino.py
+	doexe gpu_to_arduino.py
 
 	# Install OpenRC init script from examples if available
 	if [[ -f "${WORKDIR}/${P}/gpu-monitor.init" ]]; then
 		doinitrc "${WORKDIR}/${P}/gpu-monitor.init"
+	fi
+
+	# Install systemd service template if available
+	if [[ -f "${WORKDIR}/${P}/gpu-monitor.service" ]]; then
+		newinitd "${WORKDIR}/${P}/gpu-monitor.service" gpu-monitor.service 2>/dev/null || true
 	fi
 }
 
 pkg_postinst() {
 	elog "To use pwm_arduino:"
 	elog "1. Compile and flash the Arduino sketch:"
-	elog "   cd /opt/pwm_arduino"
-	elog "   arduino-cli compile --fqbn arduino:avr:nano:cpu=atmega328 gpu_monitor.ino"
-	elog "   avrdude -c arduino -p m328p -P /dev/ttyUSB1 -b 9600 -U flash:w:/tmp/gpu_monitor.hex:i"
+	elog "   arduino-cli compile --fqbn arduino:avr:nano:cpu=atmega328old /opt/pwm_arduino"
+	elog "   arduino-cli upload -p /dev/ttyUSB2 --fqbn arduino:avr:nano:cpu=atmega328old /opt/pwm_arduino"
 	elog ""
-	elog "2. Start the bridge service:"
+	elog "2. Install the init script:"
 	elog "   rc-update add gpu-monitor default"
 	elog "   rc-service gpu-monitor start"
 	elog ""
-	elog "3. Make sure /dev/ttyUSB1 is accessible (add user to dialout group)"
+	elog "3. Make sure /dev/ttyUSB* is accessible by your user (add to dialout group)"
 }
