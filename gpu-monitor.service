@@ -1,0 +1,13 @@
+[Unit]
+Description=GPU Monitor — bridge nvidia-smi data to Arduino LCD via serial
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/pwm_arduino/gpu_to_arduino.py
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONPATH=/home/ivan/.local/lib/python3.13/site-packages
+
+[Install]
+WantedBy=multi-user.target
