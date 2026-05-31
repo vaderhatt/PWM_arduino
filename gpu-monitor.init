@@ -4,8 +4,11 @@ name="gpu-monitor"
 description="Bridge nvidia-smi data to Arduino LCD via serial"
 command="/usr/bin/python3"
 command_args="/opt/pwm_arduino/gpu_to_arduino.py"
+command_background=true
+pidfile="/run/${RC_SVCNAME}.pid"
 
 depend() {
+    need localmount
     need net
     after networking
 }

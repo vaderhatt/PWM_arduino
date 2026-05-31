@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.1] - 2026-05-31
+
+### Fixed
+- Fixed OpenRC service startup by using `command_background` and a pidfile instead of relying on ad-hoc `start-stop-daemon` argument construction.
+
 ## [0.2.0] - 2026-05-30
 
 ### Added
