@@ -8,12 +8,12 @@
 // Fan PWM pin: Nano D9 is Timer1 OC1A. 4-wire PC fans expect ~25 kHz PWM.
 const int fanPwmPin = 9;
 const int fanTachPin = 2;  // INT0 on Nano
-// Calibrated against the ARCTIC P12 Pro PST PWM/RPM curve in this build.
+// Existing build calibration; verify pulses/revolution against a physical tachometer.
 const unsigned int TACH_PULSES_PER_REV = 4;
 const unsigned int FAN_PWM_TOP = 639;  // 16 MHz / (1 * (639 + 1)) = 25 kHz
-const unsigned long TACH_MIN_PULSE_US = 8000;  // ARCTIC P12 Pro PST max is ~3000 RPM
 const unsigned long TACH_TIMEOUT_US = 2000000UL;
 const unsigned int FAN_MAX_VALID_RPM = 3500;
+const uint32_t TACH_MIN_PULSE_US = 60000000UL / ((uint32_t)FAN_MAX_VALID_RPM * TACH_PULSES_PER_REV);
 
 // Fan curve with hysteresis to prevent oscillation
 const float FAN_START_TEMP = 50.0;
@@ -44,12 +44,12 @@ static int lastFanPwm    = 255;
 static uint32_t lastMessageMs = 0;
 static bool haveValidData = false;
 static bool waitingShown = false;
-static volatile unsigned long tachPulses = 0;
-static volatile unsigned long lastTachPulseUs = 0;
-static volatile unsigned long tachIntervalSumUs = 0;
+static volatile bool haveTachPulse = false;
+static volatile uint32_t lastTachPulseUs = 0;
+static volatile uint32_t tachIntervalSumUs = 0;
 static volatile unsigned int tachIntervalCount = 0;
-static unsigned long lastRpmSampleMs = 0;
-static unsigned long lastTachPulses = 0;
+static uint32_t lastRpmSampleMs = 0;
+static uint32_t lastAvgTachUs = 0;
 static unsigned int fanRpm = 0;
 static int currentFanPwm = 255;
 static int targetFanPwm = 255;
@@ -57,21 +57,19 @@ static bool fanKicking = false;
 static unsigned long fanKickUntilMs = 0;
 
 void tachPulse() {
-  unsigned long now = micros();
-  unsigned long interval = now - lastTachPulseUs;
-
-  if (lastTachPulseUs != 0) {
-    if (interval < TACH_MIN_PULSE_US) {
-      return;
-    }
-    tachIntervalSumUs += interval;
-    if (tachIntervalCount < 1000) {
-      tachIntervalCount++;
-    }
+  uint32_t now = micros();
+  uint32_t interval = now - lastTachPulseUs;
+  if (!haveTachPulse || interval > TACH_TIMEOUT_US) {
+    lastTachPulseUs = now;
+    haveTachPulse = true;
+    return;  // The first edge after a stop is not a revolution interval.
   }
-
+  if (interval < TACH_MIN_PULSE_US) return;
+  if (tachIntervalCount < 1000) {
+    tachIntervalSumUs += interval;
+    tachIntervalCount++;
+  }
   lastTachPulseUs = now;
-  tachPulses++;
 }
 
 void setupFanPwm25k() {
@@ -221,7 +219,10 @@ void loop() {
       // End of message — process it
       if (!rxOverflow && rxIdx > 0) {
         rxBuf[rxIdx] = '\0';
-        if (processMessage(rxBuf)) {
+        if (strcmp(rxBuf, "STATUS") == 0) {
+          checkDataTimeout();
+          printStatus(); // Diagnostics do not refresh the temperature timeout.
+        } else if (processMessage(rxBuf)) {
           lastMessageMs = millis();
           haveValidData = true;
         } else {
@@ -267,27 +268,24 @@ void updateFanKick() {
 }
 
 void updateFanRpm() {
-  unsigned long now = millis();
-  unsigned long elapsed = now - lastRpmSampleMs;
+  uint32_t now = millis();
+  uint32_t elapsed = now - lastRpmSampleMs;
   if (elapsed < 500) return;
 
   noInterrupts();
-  unsigned long intervalSum = tachIntervalSumUs;
+  uint32_t intervalSum = tachIntervalSumUs;
   unsigned int intervalCount = tachIntervalCount;
-  unsigned long lastPulseUs = lastTachPulseUs;
+  uint32_t lastPulseUs = lastTachPulseUs;
+  bool havePulse = haveTachPulse;
   tachIntervalSumUs = 0;
   tachIntervalCount = 0;
   interrupts();
 
   lastRpmSampleMs = now;
 
-  if (currentFanPwm == 0 || TACH_PULSES_PER_REV == 0) {
+  if (!havePulse || (uint32_t)(micros() - lastPulseUs) > TACH_TIMEOUT_US) {
     fanRpm = 0;
-    return;
-  }
-
-  if (lastPulseUs == 0 || (unsigned long)(micros() - lastPulseUs) > TACH_TIMEOUT_US) {
-    fanRpm = 0;
+    lastAvgTachUs = 0;
     return;
   }
 
@@ -295,8 +293,9 @@ void updateFanRpm() {
     return;
   }
 
-  unsigned long avgPulseUs = intervalSum / intervalCount;
+  uint32_t avgPulseUs = intervalSum / intervalCount;
   if (avgPulseUs == 0) return;
+  lastAvgTachUs = avgPulseUs;
 
   unsigned long rpm = 60000000UL / (avgPulseUs * TACH_PULSES_PER_REV);
   if (rpm > FAN_MAX_VALID_RPM) {
@@ -305,6 +304,14 @@ void updateFanRpm() {
 
   unsigned int measured = (unsigned int)rpm;
   fanRpm = fanRpm == 0 ? measured : (unsigned int)((fanRpm * 3UL + measured) / 4UL);
+}
+
+void printStatus() {
+  Serial.print("STATUS PWM="); Serial.print(currentFanPwm);
+  Serial.print(" RPM="); Serial.print(fanRpm);
+  Serial.print(" TACH_US="); Serial.print(lastAvgTachUs);
+  Serial.print(" PPR="); Serial.print(TACH_PULSES_PER_REV);
+  Serial.print(" VALID="); Serial.println(haveValidData ? 1 : 0);
 }
 
 bool parseValue(const char* token, float maximum, float& value) {

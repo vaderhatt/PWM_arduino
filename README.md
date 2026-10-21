@@ -45,6 +45,11 @@ Example:
 
 Update interval: 1 second. Baud rate: 9600.
 
+For diagnostics, `STATUS\n` returns `STATUS PWM=... RPM=... TACH_US=... PPR=... VALID=...`.
+PWM is 0–255; TACH_US is the mean accepted tach pulse interval. STATUS requests
+do not refresh the GPU-data timeout or change the commanded speed. Stop the bridge
+before opening a separate serial monitor; opening the port may reset the Nano.
+
 On a failed, empty, or partially unreadable GPU query, the bridge sends `FAULT\n`.
 It also reports a fault if the GPU count changes after the first successful query
 in that bridge process. An intentional GPU configuration change requires restarting
@@ -135,7 +140,8 @@ sudo gpasswd -a $USER dialout
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| Serial port | auto-detected | Prefer CH340 Arduino `/dev/ttyUSB*` |
+| Serial port | auto-detected | Exactly one CH340 with VID:PID `1a86:7523`; rediscovered on reconnect |
+| `ARDUINO_PORT` environment variable | unset | Explicit port or stable `/dev/serial/by-id/` or `/dev/serial/by-path/` link |
 | Baud rate | `9600` | Serial communication speed |
 | Update interval | `1` second | LCD refresh rate |
 | GPU indices | all GPUs | Uses `nvidia-smi --query-gpu=temperature.gpu,utilization.gpu` |
@@ -151,7 +157,8 @@ sudo gpasswd -a $USER dialout
 | Fan kick | `180` for 700 ms | Spin-up pulse when starting from 0 |
 | Temp ramp | `50°C` to `75°C` | Fan speed ramp range |
 | Data timeout | `3000 ms` | 100% PWM without a valid GPU sample |
-| Tach calibration | `4 pulses/rev` | Calibrated against ARCTIC P12 Pro PST PWM/RPM curve |
+| Tach calibration | `4 pulses/rev` | Existing build setting; verify with an independent physical tachometer |
+| Tach noise threshold | derived from `3500 RPM` and pulses/rev | About 4285 µs at 4 pulses/rev; accepts 3000 RPM without dropping alternate edges |
 
 ## Troubleshooting
 
@@ -161,6 +168,11 @@ sudo gpasswd -a $USER dialout
 - Verify wiring: SDA→A4, SCL→A5
 
 ### Python can't open serial port
+
+The bridge waits and retries if the Arduino is absent. It never automatically
+selects an unrelated serial adapter. With multiple CH340 adapters, or a different
+Arduino USB chip, set `ARDUINO_PORT` explicitly. After USB reconnection, automatic
+discovery handles a changed ttyUSB number.
 ```bash
 # Check device exists
 ls -la /dev/ttyUSB* /dev/ttyACM*
@@ -188,6 +200,10 @@ sudo gpasswd -a $USER dialout
 - Ensure fan GND and Arduino GND are common.
 - If RPM is 0 while spinning, add a 10k pull-up from D2 to 5V.
 - If RPM is wildly high, tach is noisy or the pulses/rev calibration needs adjustment.
+- The previous fixed 8000 µs noise threshold rejected valid pulses above 1875 RPM
+  with the configured 4 pulses/rev. The threshold is now derived from the supported
+  maximum RPM. Validate pulses/rev independently; matching a published PWM/RPM
+  curve alone does not prove the physical rotation rate.
 
 ## File Structure
 
@@ -228,6 +244,9 @@ invalid and oversized input, clock wraparound, serial flooding, display timeout,
 failed/partial GPU reads, and GPU disappearance. Compile with the Arduino CLI as
 shown above as well. These checks do not replace a physical test of PWM voltage,
 frequency, fan response, and tachometer calibration.
+
+Additional tests cover USB VID/PID selection, ambiguous adapters, reconnection to
+a renamed port, RPM from 600 to 3000 with noise, tach restart, and micros rollover.
 
 ## License
 

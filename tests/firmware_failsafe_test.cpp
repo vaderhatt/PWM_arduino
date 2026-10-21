@@ -5,6 +5,7 @@
 // Arduino generates these declarations before compiling an .ino file.
 void updateFanRpm();
 void updateFanKick();
+void printStatus();
 bool processMessage(const char*);
 #include "../gpu_monitor.ino"
 
@@ -29,11 +30,13 @@ int main() {
   fullSpeed();
   receive("40 0\n");
   assert(haveValidData && currentFanPwm == 0);
+  receive("STATUS\n");
+  assert(haveValidData && currentFanPwm == 0);
   clockMs += 2999;
   loop();
   assert(currentFanPwm == 0);
   clockMs++;
-  loop();
+  receive("STATUS\n");
   fullSpeed();
   receive("60 20\r\n");
   assert(haveValidData && currentFanPwm > 0 && currentFanPwm < 255);
@@ -113,6 +116,46 @@ int main() {
   clockMs += 3000;
   loop();
   fullSpeed();
+  separateMicros = true;
+  for (unsigned int actualRpm : {600, 1000, 1500, 1800, 2000, 2400, 3000}) {
+    haveTachPulse = false;
+    tachIntervalSumUs = 0;
+    tachIntervalCount = 0;
+    fanRpm = 0;
+    clockUs = 0;
+    tachPulse();
+    uint32_t period = 60000000UL / (actualRpm * TACH_PULSES_PER_REV);
+    for (int i = 0; i < 100; i++) {
+      clockUs += period;
+      tachPulse();
+      clockUs += 1000; // Noise between legitimate edges must not shift the period.
+      tachPulse();
+      clockUs -= 1000;
+    }
+    clockMs += 500;
+    updateFanRpm();
+    assert(fanRpm >= actualRpm - 2 && fanRpm <= actualRpm + 2);
+  }
+  clockUs += TACH_TIMEOUT_US + 1;
+  clockMs += 500;
+  updateFanRpm();
+  assert(fanRpm == 0);
+  tachPulse();
+  assert(tachIntervalCount == 0);
+  clockUs += 5000;
+  tachPulse();
+  clockMs += 500;
+  updateFanRpm();
+  assert(fanRpm == 3000);
+  haveTachPulse = false;
+  clockUs = UINT32_MAX - 2000;
+  tachPulse();
+  clockUs += 5000;
+  tachPulse();
+  clockMs += 500;
+  updateFanRpm();
+  assert(fanRpm == 3000);
   std::cout << "PASS: startup, silence, recovery, FAULT, malformed/oversized/NUL frames, "
-               "GPU limit, hottest GPU, kick cancellation, clock wrap, input flood, LCD timeout\n";
+               "GPU limit, hottest GPU, kick cancellation, clock wrap, input flood, LCD timeout, "
+               "STATUS timeout, RPM 600-3000 with noise, tach stop/restart and micros wrap\n";
 }

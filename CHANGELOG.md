@@ -3,6 +3,10 @@
 ## Unreleased
 
 ### Fixed
+- Identify CH340 adapters by VID/PID, reject ambiguous matches, support ARDUINO_PORT,
+  and rediscover the port after USB disconnection.
+- Derive the tachometer noise threshold from max RPM and configured pulses/rev,
+  preserving legitimate 3000 RPM pulses; handle tach stops and micros rollover.
 - Start at 100% PWM and force full speed after 3 seconds without valid GPU telemetry.
 - Send explicit FAULT messages for failed/partial queries and changed GPU counts instead of a fake 0°C sample.
 - Reject malformed, non-finite, oversized, and incomplete serial frames without refreshing the valid-data timer.
@@ -13,6 +17,7 @@
 - Reach 100% PWM at 75°C, with the ramp still starting at 50°C.
 
 ### Added
+- Read-only STATUS serial diagnostics, without refreshing the temperature timeout.
 - Firmware control-logic and Python bridge regression tests for data-loss behavior.
 
 ## [0.2.1] - 2026-05-31

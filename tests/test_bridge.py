@@ -11,10 +11,12 @@ from unittest.mock import patch
 
 fake_serial = types.ModuleType('serial')
 fake_serial.SerialException = type('SerialException', (Exception,), {})
+fake_tools = types.ModuleType('serial.tools')
+fake_tools.list_ports = types.SimpleNamespace(comports=lambda: [])
 spec = importlib.util.spec_from_file_location(
     'gpu_bridge', Path(__file__).resolve().parents[1] / 'gpu_to_arduino.py')
 bridge = importlib.util.module_from_spec(spec)
-with patch.dict(sys.modules, {'serial': fake_serial}):
+with patch.dict(sys.modules, {'serial': fake_serial, 'serial.tools': fake_tools}):
     spec.loader.exec_module(bridge)
 
 
@@ -23,6 +25,39 @@ class StopLoop(BaseException):
 
 
 class BridgeTests(unittest.TestCase):
+    def test_port_identification(self):
+        def port(name, vid, pid):
+            return types.SimpleNamespace(device=name, vid=vid, pid=pid)
+        ch340 = port('/dev/ttyUSB2', 0x1a86, 0x7523)
+        other = port('/dev/ttyUSB0', 0x10c4, 0xea60)
+        with patch.dict(bridge.os.environ, {}, clear=True):
+            with patch.object(bridge.list_ports, 'comports', return_value=[other, ch340]):
+                self.assertEqual(bridge.find_arduino_port(), '/dev/ttyUSB2')
+            with patch.object(bridge.list_ports, 'comports', return_value=[other]):
+                self.assertIsNone(bridge.find_arduino_port())
+            with patch.object(bridge.list_ports, 'comports', return_value=[ch340, port('/dev/ttyUSB3', 0x1a86, 0x7523)]):
+                with self.assertRaises(bridge.serial.SerialException):
+                    bridge.find_arduino_port()
+        with patch.dict(bridge.os.environ, {'ARDUINO_PORT': '/dev/serial/by-path/chosen'}):
+            self.assertEqual(bridge.find_arduino_port(), '/dev/serial/by-path/chosen')
+
+    def test_missing_port_then_usb_renumbering(self):
+        class Port:
+            is_open = True
+            def __init__(self, fails): self.fails = fails
+            def close(self): self.is_open = False
+            def write(self, message):
+                if self.fails: raise bridge.serial.SerialException('unplugged')
+                raise StopLoop()
+        with patch.object(bridge, 'find_arduino_port', side_effect=[None, '/dev/ttyUSB0', '/dev/ttyUSB2']), \
+             patch.object(bridge.serial, 'Serial', side_effect=[Port(True), Port(False)], create=True) as serial_open, \
+             patch.object(bridge, 'get_gpu_data', return_value=[(60., 0.)]), \
+             patch.object(bridge.time, 'sleep'), \
+             contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(StopLoop): bridge.main()
+        self.assertEqual([c.args[0] for c in serial_open.call_args_list], ['/dev/ttyUSB0', '/dev/ttyUSB2'])
+        self.assertTrue(serial_open.call_args.kwargs['exclusive'])
+
     def query(self, output):
         with patch.object(bridge.subprocess, 'run', return_value=types.SimpleNamespace(stdout=output)):
             with contextlib.redirect_stderr(io.StringIO()):

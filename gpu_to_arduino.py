@@ -4,44 +4,24 @@ import subprocess
 import time
 import sys
 import os
-import glob
 import math
 import serial
+from serial.tools import list_ports
 
 MAX_GPUS = 10
 MAX_MESSAGE_BYTES = 255
 
 
 def find_arduino_port():
-    """Find CH340 Arduino by VID:PID (1a86:7523), fallback to ttyUSB/ttyACM."""
-    # Prefer CH340 by device ID — avoids grabbing random USB-serial devices
-    for dev in sorted(glob.glob('/sys/bus/usb-serial/devices/ttyUSB*')):
-        # Check if the parent symlink points to a CH340 device
-        usb_dev = os.path.dirname(os.path.dirname(dev))
-        id_file = os.path.join(usb_dev, 'idProduct')
-        vid_file = os.path.join(usb_dev, '..', 'idVendor')
-
-        try:
-            if os.path.isfile(id_file):
-                pid = open(id_file).read().strip()
-                # CH340 VID:PID is 1a86:7523
-                tty_name = os.path.basename(dev)
-                return f'/dev/{tty_name}'
-        except (OSError, IOError):
-            continue
-
-    # Also check ACM devices (CP210x etc.)
-    for dev in sorted(glob.glob('/sys/bus/usb-serial/devices/ttyACM*')):
-        tty_name = os.path.basename(dev)
-        return f'/dev/{tty_name}'
-
-    # Last resort: any ttyUSB
-    for path in sorted(glob.glob('/dev/ttyUSB*')):
-        return path
-    for path in sorted(glob.glob('/dev/ttyACM*')):
-        return path
-
-    return None
+    """Use an explicit port or a single CH340; never guess another USB device."""
+    explicit = os.environ.get('ARDUINO_PORT', '').strip()
+    if explicit:
+        return explicit
+    matches = [p.device for p in list_ports.comports()
+               if (p.vid, p.pid) == (0x1A86, 0x7523)]
+    if len(matches) > 1:
+        raise serial.SerialException('Multiple CH340 devices; set ARDUINO_PORT to a stable /dev/serial/by-id or by-path link')
+    return matches[0] if matches else None
 
 
 def get_gpu_data():
@@ -89,13 +69,6 @@ def encode_gpu_message(gpus):
 
 
 def main():
-    port = find_arduino_port()
-    if not port:
-        print('No serial port found! Check /dev/ttyUSB* /dev/ttyACM*', file=sys.stderr)
-        sys.exit(1)
-
-    print(f'Using port: {port}')
-
     BAUD = 9600
     ser = None
     reconnect_delay = 1
@@ -104,9 +77,12 @@ def main():
     while True:
         try:
             if ser is None or not ser.is_open:
-                ser = serial.Serial(port, BAUD, timeout=1, write_timeout=1)
+                port = find_arduino_port()  # USB numbering can change after unplugging.
+                if not port:
+                    raise serial.SerialException('No CH340 found; waiting for Arduino')
+                ser = serial.Serial(port, BAUD, timeout=1, write_timeout=1, exclusive=True)
                 time.sleep(2)  # Arduino reset on serial open
-                print(f'Connected to {port} @ {BAUD}')
+                print(f'Connected to {port} @ {BAUD}', flush=True)
                 reconnect_delay = 1
 
             gpus = get_gpu_data()
