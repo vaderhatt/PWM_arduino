@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- Start at 100% PWM and force full speed after 3 seconds without valid GPU telemetry.
+- Send explicit FAULT messages for failed/partial queries and changed GPU counts instead of a fake 0°C sample.
+- Reject malformed, non-finite, oversized, and incomplete serial frames without refreshing the valid-data timer.
+- Cancel pending spin-up targets on faults and apply a full-speed temperature demand immediately.
+- Bound serial processing and enable Wire timeouts on supported cores to keep fan supervision responsive.
+
+### Changed
+- Reach 100% PWM at 75°C, with the ramp still starting at 50°C.
+
+### Added
+- Firmware control-logic and Python bridge regression tests for data-loss behavior.
+
 ## [0.2.1] - 2026-05-31
 
 ### Fixed

@@ -5,7 +5,11 @@ import time
 import sys
 import os
 import glob
+import math
 import serial
+
+MAX_GPUS = 10
+MAX_MESSAGE_BYTES = 255
 
 
 def find_arduino_port():
@@ -48,23 +52,22 @@ def get_gpu_data():
              '--format=csv,noheader,nounits'],
             capture_output=True, text=True, check=True, timeout=10
         )
-        lines = res.stdout.strip().split('\n')
+        lines = res.stdout.strip().splitlines()
         values = []
         for line in lines:
             line = line.strip()
             if not line:
                 continue
-            if ',' in line:
-                parts = line.split(',')
-                temp = parts[0].strip()
-                load = parts[1].strip() if len(parts) > 1 else '0'
-                # Validate numeric
-                try:
-                    float(temp)
-                    float(load)
-                    values.append((temp, load))
-                except ValueError:
-                    continue
+            parts = line.split(',')
+            if len(parts) != 2:
+                raise ValueError('Incomplete GPU temperature/load row')
+            temp, load = (float(part.strip()) for part in parts)
+            if not (math.isfinite(temp) and 0 <= temp <= 150
+                    and math.isfinite(load) and 0 <= load <= 100):
+                raise ValueError('Invalid GPU temperature/load value')
+            values.append((temp, load))
+        if len(values) > MAX_GPUS:
+            raise ValueError('Too many GPUs for the Arduino protocol')
         return values
     except subprocess.TimeoutExpired:
         print('nvidia-smi timeout', file=sys.stderr)
@@ -73,6 +76,16 @@ def get_gpu_data():
     except Exception as e:
         print(f'nvidia-smi error: {e}', file=sys.stderr)
     return []
+
+
+def encode_gpu_message(gpus):
+    """Never represent a failed query as a cold GPU."""
+    if not gpus:
+        return b'FAULT\n'
+    message = ' '.join(f'{temp:g} {load:g}' for temp, load in gpus).encode('ascii')
+    if len(message) > MAX_MESSAGE_BYTES:
+        return b'FAULT\n'
+    return message + b'\n'
 
 
 def main():
@@ -86,25 +99,24 @@ def main():
     BAUD = 9600
     ser = None
     reconnect_delay = 1
+    expected_gpu_count = None
 
     while True:
         try:
             if ser is None or not ser.is_open:
-                ser = serial.Serial(port, BAUD, timeout=1)
+                ser = serial.Serial(port, BAUD, timeout=1, write_timeout=1)
                 time.sleep(2)  # Arduino reset on serial open
                 print(f'Connected to {port} @ {BAUD}')
                 reconnect_delay = 1
 
             gpus = get_gpu_data()
             if gpus:
-                parts = []
-                for temp, load in gpus:
-                    parts.append(f'{temp} {load}')
-                msg = ' '.join(parts) + '\n'
-                ser.write(msg.encode('ascii'))
-            else:
-                # No GPU data — send zeros
-                ser.write(b'0 0\n')
+                if expected_gpu_count is None:
+                    expected_gpu_count = len(gpus)
+                elif len(gpus) != expected_gpu_count:
+                    print('GPU count changed; forcing fan failsafe', file=sys.stderr)
+                    gpus = []
+            ser.write(encode_gpu_message(gpus))
 
             reconnect_delay = 1
 

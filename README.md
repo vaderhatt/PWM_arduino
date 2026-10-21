@@ -45,6 +45,33 @@ Example:
 
 Update interval: 1 second. Baud rate: 9600.
 
+On a failed, empty, or partially unreadable GPU query, the bridge sends `FAULT\n`.
+It also reports a fault if the GPU count changes after the first successful query
+in that bridge process. An intentional GPU configuration change requires restarting
+the bridge. The initial GPU inventory still needs to be checked by the operator.
+
+## Fan safety behavior
+
+- At Arduino startup, PWM is 100% until a complete valid sample arrives.
+- PWM reaches 100% at **75°C** on the hottest reported GPU; the normal ramp starts at 50°C.
+- After **3 seconds without a valid sample**, PWM is forced to 100%, including with no LCD attached.
+- `FAULT`, malformed/out-of-range/non-finite values, incomplete pairs, oversized frames,
+  and more than 10 GPUs immediately force 100%. An invalid prefix is never accepted
+  as a complete sample. Blank line delimiters do not refresh the timer.
+- A fault cancels any pending spin-up kick. A valid sample resumes normal temperature control.
+- With current Arduino AVR cores, a Wire/I2C timeout disables the LCD so a failed display
+  does not indefinitely block fan supervision.
+
+**Update both the Arduino sketch and the Python bridge.** The old bridge sends `0 0`
+on a GPU query failure, which the new firmware cannot distinguish from a valid cold sample.
+The old firmware does not understand the new `FAULT` message. Stop the bridge, flash
+the new firmware, install the matching Python script, then restart the bridge.
+
+This is a software timeout while the MCU is running, not a hardware watchdog.
+Loss of Arduino power or an unrelated firmware hang must be verified on the actual
+fan/controller wiring. 100% PWM commands maximum speed; it cannot guarantee that
+a physically failed or unpowered fan rotates.
+
 ## Server Setup (Gentoo)
 
 ### Option 1: Emerge (recommended)
@@ -71,8 +98,10 @@ cd /opt/pwm_arduino
 pip3 install pyserial
 
 # Flash Arduino sketch
-arduino-cli compile --fqbn arduino:avr:nano:cpu=atmega328old .
-arduino-cli upload -p /dev/ttyUSB2 --fqbn arduino:avr:nano:cpu=atmega328old .
+mkdir -p build-sketch/gpu_monitor
+cp gpu_monitor.ino build-sketch/gpu_monitor/gpu_monitor.ino
+arduino-cli compile --fqbn arduino:avr:nano:cpu=atmega328old build-sketch/gpu_monitor
+arduino-cli upload -p /dev/ttyUSB2 --fqbn arduino:avr:nano:cpu=atmega328old build-sketch/gpu_monitor
 
 # Or use Arduino IDE: File > Upload
 ```
@@ -120,7 +149,8 @@ sudo gpasswd -a $USER dialout
 | Fan tach pin | `D2` | INT0, `INPUT_PULLUP` |
 | Fan min PWM | `64` | ~25% duty, calibrated for ARCTIC P12 Pro PST |
 | Fan kick | `180` for 700 ms | Spin-up pulse when starting from 0 |
-| Temp ramp | `50°C` to `85°C` | Fan speed ramp range |
+| Temp ramp | `50°C` to `75°C` | Fan speed ramp range |
+| Data timeout | `3000 ms` | 100% PWM without a valid GPU sample |
 | Tach calibration | `4 pulses/rev` | Calibrated against ARCTIC P12 Pro PST PWM/RPM curve |
 
 ## Troubleshooting
@@ -181,6 +211,23 @@ pwm_arduino/
 - Arduino IDE or arduino-cli
 - LiquidCrystal_I2C library (by Frank de Brabander)
 - Wire.h (built-in I2C library)
+
+## Validation
+
+Host tests execute the actual sketch logic with simulated Arduino interfaces and
+the actual bridge loop with fake serial/GPU responses:
+
+```bash
+python3 -m unittest discover -s tests -v
+g++ -std=c++11 -Wall -Wextra -I tests/stubs tests/firmware_failsafe_test.cpp -o /tmp/firmware_failsafe_test
+/tmp/firmware_failsafe_test
+```
+
+They cover startup, the 3-second boundary, recovery, 75°C, interrupted spin-up,
+invalid and oversized input, clock wraparound, serial flooding, display timeout,
+failed/partial GPU reads, and GPU disappearance. Compile with the Arduino CLI as
+shown above as well. These checks do not replace a physical test of PWM voltage,
+frequency, fan response, and tachometer calibration.
 
 ## License
 

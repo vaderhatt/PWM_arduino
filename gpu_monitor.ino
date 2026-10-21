@@ -1,5 +1,6 @@
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
+#include <math.h>
 
 #define LCD_COLS    20
 #define LCD_ROWS    4
@@ -16,13 +17,15 @@ const unsigned int FAN_MAX_VALID_RPM = 3500;
 
 // Fan curve with hysteresis to prevent oscillation
 const float FAN_START_TEMP = 50.0;
-const float FAN_FULL_TEMP  = 85.0;
+const float FAN_FULL_TEMP  = 75.0;
 const float HYSTERESIS     = 3.0;
 const int FAN_MIN_PWM      = 64;   // ~25%, ARCTIC curve is already ~1000 RPM here
 const int FAN_KICK_PWM     = 180;  // short spin-up pulse when starting from 0
 const unsigned int FAN_KICK_MS = 700;
+const uint32_t DATA_TIMEOUT_MS = 3000UL;
+const uint8_t SERIAL_BYTES_PER_LOOP = 64;
 
-// Serial protocol: space-separated float pairs "temp0 load0 temp1 load1\n"
+// Serial protocol: temperature/load pairs, or "FAULT\n" if GPU data is unavailable.
 #define MAX_GPUS       10
 #define MAX_MSG_LEN   256
 
@@ -30,14 +33,16 @@ LiquidCrystal_I2C* lcd = NULL;
 static uint8_t lcdAddr = 0;
 static bool lcdReady = false;
 
-// Ring buffer for serial data (avoids String heap fragmentation)
+// Line buffer; discard an entire oversized frame, never its truncated prefix.
 static char rxBuf[MAX_MSG_LEN];
 static uint8_t rxIdx = 0;
+static bool rxOverflow = false;
 
 // Fan state for hysteresis
 static float lastFanTemp = 0.0;
-static int lastFanPwm    = 0;
-static unsigned long lastMessageMs = 0;
+static int lastFanPwm    = 255;
+static uint32_t lastMessageMs = 0;
+static bool haveValidData = false;
 static bool waitingShown = false;
 static volatile unsigned long tachPulses = 0;
 static volatile unsigned long lastTachPulseUs = 0;
@@ -46,8 +51,8 @@ static volatile unsigned int tachIntervalCount = 0;
 static unsigned long lastRpmSampleMs = 0;
 static unsigned long lastTachPulses = 0;
 static unsigned int fanRpm = 0;
-static int currentFanPwm = 0;
-static int targetFanPwm = 0;
+static int currentFanPwm = 255;
+static int targetFanPwm = 255;
 static bool fanKicking = false;
 static unsigned long fanKickUntilMs = 0;
 
@@ -70,6 +75,7 @@ void tachPulse() {
 }
 
 void setupFanPwm25k() {
+  digitalWrite(fanPwmPin, HIGH);
   pinMode(fanPwmPin, OUTPUT);
   TCCR1A = 0;
   TCCR1B = 0;
@@ -77,7 +83,7 @@ void setupFanPwm25k() {
 
   // Fast PWM, TOP=ICR1, non-inverting output on OC1A/D9, prescaler=1.
   ICR1 = FAN_PWM_TOP;
-  OCR1A = 0;
+  OCR1A = FAN_PWM_TOP;  // Full speed until the first valid GPU sample.
   TCCR1A = _BV(COM1A1) | _BV(WGM11);
   TCCR1B = _BV(WGM13) | _BV(WGM12) | _BV(CS10);
 }
@@ -94,6 +100,11 @@ void applyFanTarget(int pwm) {
   if (pwm > 255) pwm = 255;
 
   targetFanPwm = pwm;
+  if (pwm == 255) {
+    fanKicking = false;
+    setFanPwm(255);
+    return;
+  }
   if (pwm > 0 && currentFanPwm == 0) {
     fanKicking = true;
     fanKickUntilMs = millis() + FAN_KICK_MS;
@@ -103,6 +114,20 @@ void applyFanTarget(int pwm) {
 
   if (!fanKicking) {
     setFanPwm(pwm);
+  }
+}
+
+void enterFailsafe() {
+  haveValidData = false;
+  fanKicking = false;
+  targetFanPwm = 255;
+  lastFanPwm = 255;
+  setFanPwm(255);
+}
+
+void checkDataTimeout() {
+  if (!haveValidData || (uint32_t)(millis() - lastMessageMs) >= DATA_TIMEOUT_MS) {
+    enterFailsafe();
   }
 }
 
@@ -121,16 +146,29 @@ uint8_t findLcdAddress() {
   return 0;
 }
 
+bool lcdHealthy() {
+#if defined(WIRE_HAS_TIMEOUT)
+  if (Wire.getWireTimeoutFlag()) {
+    lcdReady = false;  // A failed display must not block fan supervision.
+    Wire.clearWireTimeoutFlag();
+  }
+#endif
+  return lcdReady;
+}
+
 void lcdPrintPadded(uint8_t col, uint8_t row, const char* text) {
-  if (!lcdReady) return;
+  if (!lcdHealthy()) return;
   lcd->setCursor(col, row);
+  if (!lcdHealthy()) return;
   uint8_t printed = 0;
   while (*text && printed < LCD_COLS) {
     lcd->print(*text++);
+    if (!lcdHealthy()) return;
     printed++;
   }
   while (printed < LCD_COLS) {
     lcd->print(' ');
+    if (!lcdHealthy()) return;
     printed++;
   }
 }
@@ -140,10 +178,14 @@ void setup() {
   Serial.begin(9600);
 
   setupFanPwm25k();
+  enterFailsafe();
   pinMode(fanTachPin, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(fanTachPin), tachPulse, FALLING);
 
   Wire.begin();
+#if defined(WIRE_HAS_TIMEOUT)
+  Wire.setWireTimeout(25000UL, true);
+#endif
   lcdAddr = findLcdAddress();
   if (lcdAddr != 0) {
     lcd = new LiquidCrystal_I2C(lcdAddr, LCD_COLS, LCD_ROWS);
@@ -156,7 +198,7 @@ void setup() {
     snprintf(line, sizeof(line), "LCD I2C: 0x%02X", lcdAddr);
     lcdPrintPadded(0, 1, line);
     lcdPrintPadded(0, 2, "Tach: D2 pullup");
-    lcdPrintPadded(0, 3, "Waiting serial");
+    lcdPrintPadded(0, 3, "Fan 100%: no data");
     waitingShown = true;
   }
 
@@ -165,36 +207,54 @@ void setup() {
 }
 
 void loop() {
+  checkDataTimeout();
   updateFanRpm();
   updateFanKick();
 
-  // Collect serial data into ring buffer
-  while (Serial.available()) {
+  // Bound input work so a continuous stream cannot starve the timeout check.
+  uint8_t bytesRead = 0;
+  while (Serial.available() && bytesRead < SERIAL_BYTES_PER_LOOP) {
+    bytesRead++;
     char c = Serial.read();
 
     if (c == '\n' || c == '\r') {
       // End of message — process it
-      if (rxIdx > 0) {
+      if (!rxOverflow && rxIdx > 0) {
         rxBuf[rxIdx] = '\0';
-        processMessage(rxBuf);
-        lastMessageMs = millis();
+        if (processMessage(rxBuf)) {
+          lastMessageMs = millis();
+          haveValidData = true;
+        } else {
+          enterFailsafe();
+        }
         waitingShown = false;
-        rxIdx = 0;
       }
+      rxIdx = 0;
+      rxOverflow = false;
+    } else if (rxOverflow) {
+      continue;
+    } else if (c == '\0') {
+      rxOverflow = true;  // Do not accept a valid prefix before an embedded NUL.
+      enterFailsafe();
+      waitingShown = false;
     } else if (rxIdx < MAX_MSG_LEN - 1) {
       rxBuf[rxIdx++] = c;
+    } else {
+      rxOverflow = true;
+      enterFailsafe();
+      waitingShown = false;
     }
-    // else: drop overflow
   }
 
-  if (lcdReady && !waitingShown && millis() - lastMessageMs > 3000) {
-    lcdPrintPadded(0, 0, "Waiting serial");
+  checkDataTimeout();
+  if (lcdReady && !waitingShown && !haveValidData) {
+    lcdPrintPadded(0, 0, "GPU data missing");
     char line[21];
     snprintf(line, sizeof(line), "LCD I2C: 0x%02X", lcdAddr);
     lcdPrintPadded(0, 1, line);
     snprintf(line, sizeof(line), "RPM %4u", fanRpm);
     lcdPrintPadded(0, 2, line);
-    lcdPrintPadded(0, 3, "No GPU data yet");
+    lcdPrintPadded(0, 3, "Fan 100%: FAILSAFE");
     waitingShown = true;
   }
 }
@@ -247,11 +307,18 @@ void updateFanRpm() {
   fanRpm = fanRpm == 0 ? measured : (unsigned int)((fanRpm * 3UL + measured) / 4UL);
 }
 
-void processMessage(const char* msg) {
+bool parseValue(const char* token, float maximum, float& value) {
+  if (token == NULL) return false;
+  char* end = NULL;
+  value = strtod(token, &end);
+  return end != token && *end == '\0' && isfinite(value) && value >= 0 && value <= maximum;
+}
+
+bool processMessage(const char* msg) {
   // Skip empty messages
   const char* p = msg;
   while (*p == ' ' || *p == '\t') p++;
-  if (*p == '\0') return;
+  if (*p == '\0' || strcmp(p, "FAULT") == 0) return false;
 
   // Parse pairs: temp0 load0 temp1 load1 ...
   float temps[MAX_GPUS] = {0};
@@ -263,11 +330,13 @@ void processMessage(const char* msg) {
   buf[sizeof(buf) - 1] = '\0';
 
   char* token = strtok(buf, " \t");
-  while (token != NULL && numGpus < MAX_GPUS) {
-    float temp = atof(token);
+  while (token != NULL) {
+    if (numGpus >= MAX_GPUS) return false;
+    float temp;
+    float load;
+    if (!parseValue(token, 150.0f, temp)) return false;
     token = strtok(NULL, " \t");
-    if (token == NULL) break;
-    float load = atof(token);
+    if (!parseValue(token, 100.0f, load)) return false;
 
     temps[numGpus] = temp;
     loads[numGpus] = load;
@@ -276,7 +345,7 @@ void processMessage(const char* msg) {
     token = strtok(NULL, " \t");
   }
 
-  if (numGpus == 0) return;
+  if (numGpus == 0) return false;
 
   // Find hottest GPU for fan control
   float maxTemp = 0.0;
@@ -334,4 +403,5 @@ void processMessage(const char* msg) {
     }
     lcdPrintPadded(0, LCD_ROWS - 1, line);
   }
+  return true;
 }
