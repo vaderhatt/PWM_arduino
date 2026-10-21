@@ -7,6 +7,9 @@
   and rediscover the port after USB disconnection.
 - Derive the tachometer noise threshold from max RPM and configured pulses/rev,
   preserving legitimate 3000 RPM pulses; handle tach stops and micros rollover.
+- Use 2 tach pulses/revolution: full-PWM hardware readings of ~10 ms per edge
+  are consistent with the P12 Pro PST's ~3000 RPM rating; independent mechanical
+  calibration remains unverified.
 - Start at 100% PWM and force full speed after 3 seconds without valid GPU telemetry.
 - Send explicit FAULT messages for failed/partial queries and changed GPU counts instead of a fake 0°C sample.
 - Reject malformed, non-finite, oversized, and incomplete serial frames without refreshing the valid-data timer.

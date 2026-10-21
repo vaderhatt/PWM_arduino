@@ -8,8 +8,9 @@
 // Fan PWM pin: Nano D9 is Timer1 OC1A. 4-wire PC fans expect ~25 kHz PWM.
 const int fanPwmPin = 9;
 const int fanTachPin = 2;  // INT0 on Nano
-// Existing build calibration; verify pulses/revolution against a physical tachometer.
-const unsigned int TACH_PULSES_PER_REV = 4;
+// Standard PC-fan tach setting. ~10 ms edges at full PWM agree with ~3000 RPM.
+// Confirm absolute mechanical RPM with an independent tachometer if needed.
+const unsigned int TACH_PULSES_PER_REV = 2;
 const unsigned int FAN_PWM_TOP = 639;  // 16 MHz / (1 * (639 + 1)) = 25 kHz
 const unsigned long TACH_TIMEOUT_US = 2000000UL;
 const unsigned int FAN_MAX_VALID_RPM = 3500;

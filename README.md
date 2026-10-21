@@ -157,8 +157,8 @@ sudo gpasswd -a $USER dialout
 | Fan kick | `180` for 700 ms | Spin-up pulse when starting from 0 |
 | Temp ramp | `50°C` to `75°C` | Fan speed ramp range |
 | Data timeout | `3000 ms` | 100% PWM without a valid GPU sample |
-| Tach calibration | `4 pulses/rev` | Existing build setting; verify with an independent physical tachometer |
-| Tach noise threshold | derived from `3500 RPM` and pulses/rev | About 4285 µs at 4 pulses/rev; accepts 3000 RPM without dropping alternate edges |
+| Tach calibration | `2 pulses/rev` | Standard PC-fan setting; ~10 ms edges observed at full PWM are consistent with ~3000 RPM |
+| Tach noise threshold | derived from `3500 RPM` and pulses/rev | About 8571 µs at 2 pulses/rev; accepts 3000 RPM without dropping alternate edges |
 
 ## Troubleshooting
 
@@ -204,6 +204,10 @@ sudo gpasswd -a $USER dialout
   with the configured 4 pulses/rev. The threshold is now derived from the supported
   maximum RPM. Validate pulses/rev independently; matching a published PWM/RPM
   curve alone does not prove the physical rotation rate.
+- The old 4 pulses/rev setting displayed roughly 1500 RPM at full PWM with an
+  observed ~10 ms tach interval. The new default is the standard 2 pulses/rev,
+  consistent with this fan's published ~3000 RPM maximum. An independent optical
+  tachometer is still required to verify absolute mechanical RPM.
 
 ## File Structure
 

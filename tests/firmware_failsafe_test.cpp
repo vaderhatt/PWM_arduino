@@ -142,7 +142,7 @@ int main() {
   assert(fanRpm == 0);
   tachPulse();
   assert(tachIntervalCount == 0);
-  clockUs += 5000;
+  clockUs += 60000000UL / (3000UL * TACH_PULSES_PER_REV);
   tachPulse();
   clockMs += 500;
   updateFanRpm();
@@ -150,7 +150,7 @@ int main() {
   haveTachPulse = false;
   clockUs = UINT32_MAX - 2000;
   tachPulse();
-  clockUs += 5000;
+  clockUs += 60000000UL / (3000UL * TACH_PULSES_PER_REV);
   tachPulse();
   clockMs += 500;
   updateFanRpm();
